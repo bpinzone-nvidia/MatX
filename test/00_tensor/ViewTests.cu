@@ -232,36 +232,38 @@ TYPED_TEST(ViewTestsFloatNonComplex, ViewTestMean)
     auto non_owning = matx::make_tensor<float, 2, matx::non_owning>(
       d_external_mat, mat_shape);
 
-    if(method == 0){
-      auto owning_transposed = matx::make_tensor<float, 2>(mat_shape_trans);
-      matx::copy(owning_transposed, non_owning.Permute({1, 0}), stream);
+    auto copy_owning = matx::make_tensor<float, 2>(mat_shape);
+    matx::copy(copy_owning, non_owning, stream);
 
-      auto mean_over_rows = matx::make_tensor<float, 1>({num_cols});
-      matx::mean(mean_over_rows, owning_transposed, stream);
+    auto transposed_owning = matx::make_tensor<float, 2>(mat_shape_trans);
+    matx::copy(transposed_owning, copy_owning.Permute({1, 0}), stream);
 
-      // identical snippet to below
-      for(int row_idx = 0; row_idx < num_rows; ++row_idx){
-        auto subtract_slice = non_owning.Slice<1>(
+    auto mean_over_rows = matx::make_tensor<float, 1>({num_cols});
+    matx::mean(mean_over_rows, transposed_owning, stream);
+
+    auto norm = matx::make_tensor<float, 2>(mat_shape);
+    matx::copy(norm, copy_owning, stream);
+    // use concrete, and you still need to transpose
+
+    for(int row_idx = 0; row_idx < num_rows; ++row_idx){
+      if(method == 0){
+        auto subtract_slice = norm.Slice(
+          {row_idx, 0},
+          {row_idx + 1, matx::matxEnd});
+
+        (subtract_slice = subtract_slice - mean_over_rows).run(stream);
+
+      }
+      else {
+        auto subtract_slice = norm.Slice<1>(
           {row_idx, 0},
           {matx::matxDropDim, matx::matxEnd});
 
         (subtract_slice = subtract_slice - mean_over_rows).run(stream);
       }
-
     }
-    else {
-      auto mean_over_rows = matx::make_tensor<float, 1>({num_cols});
-      matx::mean(mean_over_rows, non_owning.Permute({1, 0}), stream);
 
-      // identical snippet to above
-      for(int row_idx = 0; row_idx < num_rows; ++row_idx){
-        auto subtract_slice = non_owning.Slice<1>(
-          {row_idx, 0},
-          {matx::matxDropDim, matx::matxEnd});
-
-        (subtract_slice = subtract_slice - mean_over_rows).run(stream);
-      }
-    }
+    matx::copy(non_owning, norm, stream);
 
     auto& result_dst = method == 0 ? first_method_results : second_method_results;
     matx::copy(result_dst, non_owning, stream);
