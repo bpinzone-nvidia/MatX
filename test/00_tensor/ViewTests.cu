@@ -203,12 +203,39 @@ TYPED_TEST(ViewTestsIntegral, SliceStride)
   MATX_EXIT_HANDLER();
 }
 
+// temporary helper for this unit test.
+template<typename ViewType1, typename ViewType2>
+bool are_views_eq(const ViewType1& v1, const ViewType2& v2, cudaStream_t stream){
+
+  static_assert(std::is_same_v<
+    typename ViewType1::scalar_type,
+    typename ViewType2::scalar_type>);
+
+  static_assert(v1.Rank() == v2.Rank());
+
+  if(v1.Shape() != v2.Shape()){
+    return false;
+  }
+
+  auto element_eq = matx::make_tensor<bool, v1.Rank()>(v1.Shape());
+  (element_eq = v1 == v2).run(stream);
+
+  cudaStreamSynchronize(stream);
+
+  return std::all_of(
+    element_eq.Data(),
+    element_eq.Data() + element_eq.TotalSize(),
+    [](const auto& is_elem_eq){return is_elem_eq;}
+  );
+}
+
 TYPED_TEST(ViewTestsFloatNonComplex, ViewTestMean)
 {
   MATX_ENTER_HANDLER();
 
   const cudaStream_t stream = 0;
 
+  // sizes and shapes
   constexpr int num_rows = 5998;
   constexpr int num_cols = 64;
   constexpr int num_elements = num_rows * num_cols;
@@ -216,66 +243,37 @@ TYPED_TEST(ViewTestsFloatNonComplex, ViewTestMean)
   const tensorShape_t<2> mat_shape({num_rows, num_cols});
   const tensorShape_t<2> mat_shape_trans({num_cols, num_rows});
 
-  auto first_method_results = matx::make_tensor<float, 2>(mat_shape);
-  auto second_method_results = matx::make_tensor<float, 2>(mat_shape);
-
+  // dummy data.
   std::vector<float> external_mat(num_elements);
   std::iota(external_mat.begin(), external_mat.end(), 1);
-
   float* d_external_mat;
   cudaMalloc(&d_external_mat, num_bytes);
+  cudaMemcpy(d_external_mat, external_mat.data(), num_bytes, cudaMemcpyHostToDevice);
+  auto non_owning = matx::make_tensor<float, 2, matx::non_owning>(
+    d_external_mat, mat_shape);
 
-  for(int method = 0; method < 2; ++method){
+  // output
+  auto first_method_mean_over_rows = matx::make_tensor<float, 1>({num_cols});
+  auto second_method_mean_over_rows = matx::make_tensor<float, 1>({num_cols});
 
-    cudaMemcpy(d_external_mat, external_mat.data(), num_bytes, cudaMemcpyHostToDevice);
+  // first method setup
+  auto owning_transposed = matx::make_tensor<float, 2>(mat_shape_trans);
+  matx::copy(owning_transposed, non_owning.Permute({1, 0}), stream);
 
-    auto non_owning = matx::make_tensor<float, 2, matx::non_owning>(
-      d_external_mat, mat_shape);
+  // second method setup
+  // (none)
 
-    if(method == 0){
-      auto owning_transposed = matx::make_tensor<float, 2>(mat_shape_trans);
-      matx::copy(owning_transposed, non_owning.Permute({1, 0}), stream);
+  // assert input same
+  ASSERT_TRUE(are_views_eq(owning_transposed, non_owning.Permute({1, 0}), stream));
 
-      auto mean_over_rows = matx::make_tensor<float, 1>({num_cols});
-      matx::mean(mean_over_rows, owning_transposed, stream);
+  // first method compute
+  matx::mean(first_method_mean_over_rows, owning_transposed, stream);
 
-      // identical snippet to below
-      for(int row_idx = 0; row_idx < num_rows; ++row_idx){
-        auto subtract_slice = non_owning.Slice<1>(
-          {row_idx, 0},
-          {matx::matxDropDim, matx::matxEnd});
+  // second method compute
+  matx::mean(second_method_mean_over_rows, non_owning.Permute({1, 0}), stream);
 
-        (subtract_slice = subtract_slice - mean_over_rows).run(stream);
-      }
-
-    }
-    else {
-      auto mean_over_rows = matx::make_tensor<float, 1>({num_cols});
-      matx::mean(mean_over_rows, non_owning.Permute({1, 0}), stream);
-
-      // identical snippet to above
-      for(int row_idx = 0; row_idx < num_rows; ++row_idx){
-        auto subtract_slice = non_owning.Slice<1>(
-          {row_idx, 0},
-          {matx::matxDropDim, matx::matxEnd});
-
-        (subtract_slice = subtract_slice - mean_over_rows).run(stream);
-      }
-    }
-
-    auto& result_dst = method == 0 ? first_method_results : second_method_results;
-    matx::copy(result_dst, non_owning, stream);
-
-  }
-
-  auto results_eq = matx::make_tensor<bool, 2>(mat_shape);
-  (results_eq = first_method_results == second_method_results).run(stream);
-  cudaStreamSynchronize(stream);
-  ASSERT_TRUE(std::all_of(
-    results_eq.Data(),
-    results_eq.Data() + results_eq.Size(0) * results_eq.Size(1),
-    [](const auto& is_elem_eq){return is_elem_eq;}
-  ));
+  // assert output same
+  ASSERT_TRUE(are_views_eq(first_method_mean_over_rows, second_method_mean_over_rows, stream));
 
   cudaFree(d_external_mat);
 
