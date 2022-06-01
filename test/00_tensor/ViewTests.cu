@@ -235,29 +235,31 @@ TYPED_TEST(ViewTestsFloatNonComplex, ViewTestMean)
 
   const cudaStream_t stream = 0;
 
+  using test_scalar_t = int;
+
   // sizes and shapes
   constexpr int num_rows = 5998;
   constexpr int num_cols = 64;
   constexpr int num_elements = num_rows * num_cols;
-  constexpr int num_bytes = num_elements * sizeof(float);
+  constexpr int num_bytes = num_elements * sizeof(test_scalar_t);
   const tensorShape_t<2> mat_shape({num_rows, num_cols});
   const tensorShape_t<2> mat_shape_trans({num_cols, num_rows});
 
   // dummy data.
-  std::vector<float> external_mat(num_elements);
+  std::vector<test_scalar_t> external_mat(num_elements);
   std::iota(external_mat.begin(), external_mat.end(), 1);
-  float* d_external_mat;
+  test_scalar_t* d_external_mat;
   cudaMalloc(&d_external_mat, num_bytes);
   cudaMemcpy(d_external_mat, external_mat.data(), num_bytes, cudaMemcpyHostToDevice);
-  auto non_owning = matx::make_tensor<float, 2, matx::non_owning>(
+  auto non_owning = matx::make_tensor<test_scalar_t, 2, matx::non_owning>(
     d_external_mat, mat_shape);
 
   // output
-  auto first_method_mean_over_rows = matx::make_tensor<float, 1>({num_cols});
-  auto second_method_mean_over_rows = matx::make_tensor<float, 1>({num_cols});
+  auto first_method_mean_over_rows = matx::make_tensor<test_scalar_t, 1>({num_cols});
+  auto second_method_mean_over_rows = matx::make_tensor<test_scalar_t, 1>({num_cols});
 
   // first method setup
-  auto owning_transposed = matx::make_tensor<float, 2>(mat_shape_trans);
+  auto owning_transposed = matx::make_tensor<test_scalar_t, 2>(mat_shape_trans);
   matx::copy(owning_transposed, non_owning.Permute({1, 0}), stream);
 
   // second method setup
@@ -271,6 +273,14 @@ TYPED_TEST(ViewTestsFloatNonComplex, ViewTestMean)
 
   // second method compute
   matx::mean(second_method_mean_over_rows, non_owning.Permute({1, 0}), stream);
+
+  cudaStreamSynchronize(stream);
+
+  // std::cout << "\nowning method: " << std::endl;
+  // first_method_mean_over_rows.Print();
+
+  // std::cout << "\nnon-owning method: " << std::endl;
+  // second_method_mean_over_rows.Print();
 
   // assert output same
   ASSERT_TRUE(are_views_eq(first_method_mean_over_rows, second_method_mean_over_rows, stream));
